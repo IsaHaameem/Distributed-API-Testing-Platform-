@@ -19,6 +19,7 @@ from app.routers import (
     organizations,
     projects,
     requests,
+    schedules,
 )
 
 settings = get_settings()
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     application.include_router(requests.router)
     application.include_router(assertions.router)
     application.include_router(environment_variables.router)
+    application.include_router(schedules.router)
 
     return application
 

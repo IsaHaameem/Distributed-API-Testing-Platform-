@@ -11,7 +11,7 @@ from app.repositories.assertion_repository import AssertionRepository
 from app.repositories.collection_repository import CollectionRepository
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.project_repository import ProjectRepository
-from app.services.authorization import ADMIN_ROLES, require_membership
+from app.services.authorization import ADMIN_ROLES, organization_id_for_collection, require_membership
 
 
 class AssertionService:
@@ -33,13 +33,12 @@ class AssertionService:
         request = await self.request_repository.get_by_id(api_request_id)
         if request is None:
             raise ApiRequestNotFoundError()
-        collection = await self.collection_repository.get_by_id(request.collection_id)
-        if collection is None:
-            raise ApiRequestNotFoundError()
-        project = await self.project_repository.get_by_id(collection.project_id)
-        if project is None:
-            raise ApiRequestNotFoundError()
-        return project.organization_id
+        return await organization_id_for_collection(
+            self.collection_repository,
+            self.project_repository,
+            request.collection_id,
+            ApiRequestNotFoundError,
+        )
 
     async def create_assertion(
         self, *, current_user: User, api_request_id: UUID, type_: str, config: dict

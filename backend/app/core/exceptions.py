@@ -98,3 +98,8 @@ class EnvironmentVariableNotFoundError(AppError):
 class EnvironmentVariableKeyTakenError(AppError):
     status_code = 409
     detail = "This key is already defined for this project."
+
+
+class ScheduleNotFoundError(AppError):
+    status_code = 404
+    detail = "Schedule not found."

@@ -11,7 +11,7 @@ from app.repositories.api_request_repository import ApiRequestRepository
 from app.repositories.collection_repository import CollectionRepository
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.project_repository import ProjectRepository
-from app.services.authorization import ADMIN_ROLES, require_membership
+from app.services.authorization import ADMIN_ROLES, organization_id_for_collection, require_membership
 
 
 class ApiRequestService:
@@ -28,13 +28,12 @@ class ApiRequestService:
         self.member_repository = member_repository
 
     async def _organization_id_for_collection(self, collection_id: UUID) -> UUID:
-        collection = await self.collection_repository.get_by_id(collection_id)
-        if collection is None:
-            raise CollectionNotFoundError()
-        project = await self.project_repository.get_by_id(collection.project_id)
-        if project is None:
-            raise CollectionNotFoundError()
-        return project.organization_id
+        return await organization_id_for_collection(
+            self.collection_repository,
+            self.project_repository,
+            collection_id,
+            CollectionNotFoundError,
+        )
 
     async def _get_authorized_request(
         self,

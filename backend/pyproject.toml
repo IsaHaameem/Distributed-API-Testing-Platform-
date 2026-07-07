@@ -21,6 +21,8 @@ dependencies = [
     "argon2-cffi==25.1.0",
     "email-validator==2.3.0",
     "python-multipart==0.0.32",
+    "croniter==6.2.3",
+    "tzdata==2026.2",
 ]
 
 [project.optional-dependencies]
