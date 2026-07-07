@@ -1,0 +1,1 @@
+"""Integration tests — exercise real Postgres/Redis via Docker Compose."""
