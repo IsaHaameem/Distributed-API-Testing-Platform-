@@ -36,14 +36,14 @@ class OrganizationCreate(BaseModel):
 
 
 class OrganizationUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    slug: str | None = Field(default=None, min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    slug: str | None = Field(default=None, max_length=255)
 
     @field_validator("name")
     @classmethod
-    def strip_name(cls, value: str | None) -> str | None:
+    def strip_name(cls, value: str | None) -> str:
         if value is None:
-            return value
+            raise ValueError("name cannot be null; omit the field to leave it unchanged.")
         stripped = value.strip()
         if not stripped:
             raise ValueError("name cannot be blank.")
@@ -51,9 +51,9 @@ class OrganizationUpdate(BaseModel):
 
     @field_validator("slug")
     @classmethod
-    def validate_slug(cls, value: str | None) -> str | None:
+    def validate_slug(cls, value: str | None) -> str:
         if value is None:
-            return value
+            raise ValueError("slug cannot be null; omit the field to leave it unchanged.")
         if not _SLUG_PATTERN.match(value):
             raise ValueError(_SLUG_HELP)
         return value

@@ -78,3 +78,13 @@ class ProjectNotFoundError(AppError):
 class CollectionNotFoundError(AppError):
     status_code = 404
     detail = "Collection not found."
+
+
+class ApiRequestNotFoundError(AppError):
+    status_code = 404
+    detail = "API request not found."
+
+
+class AssertionNotFoundError(AppError):
+    status_code = 404
+    detail = "Assertion not found."

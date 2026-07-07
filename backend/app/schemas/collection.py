@@ -20,14 +20,14 @@ class CollectionCreate(BaseModel):
 
 
 class CollectionUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
     description: str | None = Field(default=None, max_length=5000)
 
     @field_validator("name")
     @classmethod
-    def strip_name(cls, value: str | None) -> str | None:
+    def strip_name(cls, value: str | None) -> str:
         if value is None:
-            return value
+            raise ValueError("name cannot be null; omit the field to leave it unchanged.")
         stripped = value.strip()
         if not stripped:
             raise ValueError("name cannot be blank.")
