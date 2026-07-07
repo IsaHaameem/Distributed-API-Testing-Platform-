@@ -2,13 +2,15 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.core.exceptions import AppError
 from app.core.logging_config import setup_logging
 from app.database import engine
 from app.middlewares.logging_middleware import LoggingMiddleware
-from app.routers import health
+from app.routers import auth, health
 
 settings = get_settings()
 
@@ -29,7 +31,17 @@ def create_app() -> FastAPI:
     )
 
     application.add_middleware(LoggingMiddleware)
+
+    @application.exception_handler(AppError)
+    async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+
     application.include_router(health.router)
+    application.include_router(auth.router)
 
     return application
 

@@ -31,14 +31,15 @@ AsyncSessionFactory = async_sessionmaker(
 
 
 class Base(DeclarativeBase):
-    """Base class for all ORM models, defined here and imported in Step 3."""
+    """Base class for all ORM models, defined here and imported by app.models."""
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Yield a database session for the duration of a request."""
+    """Yield a database session for the duration of a request; commit on success, roll back on error."""
     async with AsyncSessionFactory() as session:
         try:
             yield session
+            await session.commit()
         except Exception:
             await session.rollback()
             raise

@@ -1,1 +1,1 @@
-"""Pydantic request/response schemas. Populated starting Step 3."""
+"""Pydantic request/response schemas."""

@@ -17,6 +17,10 @@ dependencies = [
     "redis==8.0.1",
     "alembic==1.18.5",
     "uuid6>=2025.0.1",
+    "pyjwt==2.13.0",
+    "argon2-cffi==25.1.0",
+    "email-validator==2.3.0",
+    "python-multipart==0.0.32",
 ]
 
 [project.optional-dependencies]
@@ -31,5 +35,6 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]

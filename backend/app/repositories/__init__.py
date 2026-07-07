@@ -1,1 +1,1 @@
-"""Data-access layer, one module per aggregate. Populated starting Step 3."""
+"""Data-access layer, one module per aggregate."""
