@@ -33,3 +33,38 @@ class InvalidTokenError(AppError):
     status_code = 401
     detail = "Could not validate credentials."
     headers = {"WWW-Authenticate": "Bearer"}
+
+
+class OrganizationNotFoundError(AppError):
+    status_code = 404
+    detail = "Organization not found."
+
+
+class InsufficientPermissionsError(AppError):
+    status_code = 403
+    detail = "You do not have permission to perform this action."
+
+
+class UserNotFoundError(AppError):
+    status_code = 404
+    detail = "No user was found with that email address."
+
+
+class AlreadyMemberError(AppError):
+    status_code = 409
+    detail = "This user is already a member of the organization."
+
+
+class MembershipNotFoundError(AppError):
+    status_code = 404
+    detail = "This user is not a member of the organization."
+
+
+class CannotRemoveLastOwnerError(AppError):
+    status_code = 409
+    detail = "An organization must have at least one owner."
+
+
+class SlugAlreadyTakenError(AppError):
+    status_code = 409
+    detail = "This slug is already in use."
