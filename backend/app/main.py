@@ -10,7 +10,16 @@ from app.core.exceptions import AppError
 from app.core.logging_config import setup_logging
 from app.database import engine
 from app.middlewares.logging_middleware import LoggingMiddleware
-from app.routers import assertions, auth, collections, health, organizations, projects, requests
+from app.routers import (
+    assertions,
+    auth,
+    collections,
+    environment_variables,
+    health,
+    organizations,
+    projects,
+    requests,
+)
 
 settings = get_settings()
 
@@ -47,6 +56,7 @@ def create_app() -> FastAPI:
     application.include_router(collections.router)
     application.include_router(requests.router)
     application.include_router(assertions.router)
+    application.include_router(environment_variables.router)
 
     return application
 

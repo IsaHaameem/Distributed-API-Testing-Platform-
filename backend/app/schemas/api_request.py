@@ -7,14 +7,13 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.enums import HttpMethod
-
-_VARIABLE_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+from app.schemas.validators import VARIABLE_NAME_PATTERN
 
 
 class JsonPathExtractRule(BaseModel):
     type: Literal["json_path"]
     path: str = Field(min_length=1, max_length=500)
-    save_as: str = Field(min_length=1, max_length=100, pattern=_VARIABLE_NAME_PATTERN)
+    save_as: str = Field(min_length=1, max_length=100, pattern=VARIABLE_NAME_PATTERN)
 
     @field_validator("path")
     @classmethod
@@ -26,9 +25,9 @@ class JsonPathExtractRule(BaseModel):
 
 class JwtClaimExtractRule(BaseModel):
     type: Literal["jwt_claim"]
-    source_var: str = Field(min_length=1, max_length=100, pattern=_VARIABLE_NAME_PATTERN)
+    source_var: str = Field(min_length=1, max_length=100, pattern=VARIABLE_NAME_PATTERN)
     claim: str = Field(min_length=1, max_length=100)
-    save_as: str = Field(min_length=1, max_length=100, pattern=_VARIABLE_NAME_PATTERN)
+    save_as: str = Field(min_length=1, max_length=100, pattern=VARIABLE_NAME_PATTERN)
 
 
 ExtractRule = Annotated[

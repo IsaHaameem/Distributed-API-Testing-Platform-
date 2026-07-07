@@ -88,3 +88,13 @@ class ApiRequestNotFoundError(AppError):
 class AssertionNotFoundError(AppError):
     status_code = 404
     detail = "Assertion not found."
+
+
+class EnvironmentVariableNotFoundError(AppError):
+    status_code = 404
+    detail = "Environment variable not found."
+
+
+class EnvironmentVariableKeyTakenError(AppError):
+    status_code = 409
+    detail = "This key is already defined for this project."
