@@ -10,7 +10,7 @@ from app.core.exceptions import AppError
 from app.core.logging_config import setup_logging
 from app.database import engine
 from app.middlewares.logging_middleware import LoggingMiddleware
-from app.routers import auth, health, organizations
+from app.routers import auth, collections, health, organizations, projects
 
 settings = get_settings()
 
@@ -43,6 +43,8 @@ def create_app() -> FastAPI:
     application.include_router(health.router)
     application.include_router(auth.router)
     application.include_router(organizations.router)
+    application.include_router(projects.router)
+    application.include_router(collections.router)
 
     return application
 

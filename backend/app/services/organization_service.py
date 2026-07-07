@@ -20,8 +20,7 @@ from app.models.user import User
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.user_repository import UserRepository
-
-_ADMIN_ROLES = {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+from app.services.authorization import ADMIN_ROLES, require_membership
 
 
 class OrganizationService:
@@ -34,21 +33,6 @@ class OrganizationService:
         self.organization_repository = organization_repository
         self.member_repository = member_repository
         self.user_repository = user_repository
-
-    async def _require_membership(
-        self,
-        organization_id: UUID,
-        user_id: UUID,
-        allowed_roles: set[OrganizationRole] | None = None,
-    ) -> OrganizationMember:
-        membership = await self.member_repository.get_membership(organization_id, user_id)
-        if membership is None:
-            # Same error as "organization doesn't exist" -- a non-member
-            # should not be able to tell the two apart.
-            raise OrganizationNotFoundError()
-        if allowed_roles is not None and membership.role not in allowed_roles:
-            raise InsufficientPermissionsError()
-        return membership
 
     async def create_organization(
         self, *, current_user: User, name: str, slug: str
@@ -73,7 +57,7 @@ class OrganizationService:
     async def get_organization(
         self, *, current_user: User, organization_id: UUID
     ) -> tuple[Organization, OrganizationRole]:
-        membership = await self._require_membership(organization_id, current_user.id)
+        membership = await require_membership(self.member_repository, organization_id, current_user.id)
         organization = await self.organization_repository.get_by_id(organization_id)
         if organization is None:
             raise OrganizationNotFoundError()
@@ -87,7 +71,9 @@ class OrganizationService:
         name: str | None,
         slug: str | None,
     ) -> tuple[Organization, OrganizationRole]:
-        membership = await self._require_membership(organization_id, current_user.id, _ADMIN_ROLES)
+        membership = await require_membership(
+            self.member_repository, organization_id, current_user.id, ADMIN_ROLES
+        )
         organization = await self.organization_repository.get_by_id(organization_id)
         if organization is None:
             raise OrganizationNotFoundError()
@@ -102,7 +88,9 @@ class OrganizationService:
         return organization, membership.role
 
     async def delete_organization(self, *, current_user: User, organization_id: UUID) -> None:
-        await self._require_membership(organization_id, current_user.id, {OrganizationRole.OWNER})
+        await require_membership(
+            self.member_repository, organization_id, current_user.id, {OrganizationRole.OWNER}
+        )
         organization = await self.organization_repository.get_by_id(organization_id)
         if organization is None:
             raise OrganizationNotFoundError()
@@ -111,7 +99,7 @@ class OrganizationService:
     async def list_members(
         self, *, current_user: User, organization_id: UUID
     ) -> list[OrganizationMember]:
-        await self._require_membership(organization_id, current_user.id)
+        await require_membership(self.member_repository, organization_id, current_user.id)
         return await self.member_repository.list_members(organization_id)
 
     async def add_member(
@@ -122,13 +110,11 @@ class OrganizationService:
         email: str,
         role: OrganizationRole,
     ) -> OrganizationMember:
-        current_membership = await self._require_membership(
-            organization_id, current_user.id, _ADMIN_ROLES
+        current_membership = await require_membership(
+            self.member_repository, organization_id, current_user.id, ADMIN_ROLES
         )
 
-        if role in _ADMIN_ROLES and current_membership.role != OrganizationRole.OWNER:
-            # Admins can grow the team but can't grant admin/owner --
-            # that would let an admin create a peer or superior.
+        if role in ADMIN_ROLES and current_membership.role != OrganizationRole.OWNER:
             raise InsufficientPermissionsError()
 
         target_user = await self.user_repository.get_by_email(email.strip().lower())
@@ -154,7 +140,9 @@ class OrganizationService:
         target_user_id: UUID,
         role: OrganizationRole,
     ) -> OrganizationMember:
-        await self._require_membership(organization_id, current_user.id, {OrganizationRole.OWNER})
+        await require_membership(
+            self.member_repository, organization_id, current_user.id, {OrganizationRole.OWNER}
+        )
 
         membership = await self.member_repository.get_membership(organization_id, target_user_id)
         if membership is None:
@@ -173,9 +161,11 @@ class OrganizationService:
         is_self_removal = current_user.id == target_user_id
 
         if is_self_removal:
-            membership = await self._require_membership(organization_id, current_user.id)
+            membership = await require_membership(self.member_repository, organization_id, current_user.id)
         else:
-            await self._require_membership(organization_id, current_user.id, {OrganizationRole.OWNER})
+            await require_membership(
+                self.member_repository, organization_id, current_user.id, {OrganizationRole.OWNER}
+            )
             membership = await self.member_repository.get_membership(organization_id, target_user_id)
             if membership is None:
                 raise MembershipNotFoundError()

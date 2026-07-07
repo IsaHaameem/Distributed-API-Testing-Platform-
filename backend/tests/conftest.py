@@ -46,3 +46,19 @@ async def register_and_login(client: AsyncClient):
         }
 
     return _register_and_login
+
+
+@pytest_asyncio.fixture
+async def create_organization(client: AsyncClient):
+    """Factory fixture: create an organization owned by the given auth headers."""
+
+    async def _create_organization(
+        headers: dict, name: str = "Test Org", slug: str | None = None
+    ) -> dict:
+        slug = slug or f"org-{uuid.uuid4().hex[:12]}"
+        response = await client.post(
+            "/organizations", json={"name": name, "slug": slug}, headers=headers
+        )
+        return response.json()
+
+    return _create_organization

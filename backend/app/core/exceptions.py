@@ -68,3 +68,13 @@ class CannotRemoveLastOwnerError(AppError):
 class SlugAlreadyTakenError(AppError):
     status_code = 409
     detail = "This slug is already in use."
+
+
+class ProjectNotFoundError(AppError):
+    status_code = 404
+    detail = "Project not found."
+
+
+class CollectionNotFoundError(AppError):
+    status_code = 404
+    detail = "Collection not found."
