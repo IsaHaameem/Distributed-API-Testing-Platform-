@@ -5,6 +5,8 @@ from collections.abc import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
 
@@ -62,3 +64,31 @@ async def create_organization(client: AsyncClient):
         return response.json()
 
     return _create_organization
+
+
+@pytest_asyncio.fixture
+async def redis_client() -> AsyncGenerator[Redis, None]:
+    """A Redis client for tests that talk to Redis directly (streams, worker liveness),
+    bypassing HTTP the same way a worker process would."""
+    from app.core.redis_client import get_redis_client
+
+    client = get_redis_client()
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+@pytest_asyncio.fixture
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """A raw session for tests that call repositories/services directly, bypassing
+    HTTP. Commits are NOT automatic here -- call `await db_session.commit()`
+    explicitly if a test needs its writes visible to a separate session (e.g.
+    one an HTTP call within the same test will open via get_db)."""
+    from app.database import AsyncSessionFactory
+
+    async with AsyncSessionFactory() as session:
+        try:
+            yield session
+        finally:
+            await session.close()

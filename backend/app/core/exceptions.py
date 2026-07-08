@@ -103,3 +103,8 @@ class EnvironmentVariableKeyTakenError(AppError):
 class ScheduleNotFoundError(AppError):
     status_code = 404
     detail = "Schedule not found."
+
+
+class WorkerNotFoundError(AppError):
+    status_code = 404
+    detail = "Worker not found."

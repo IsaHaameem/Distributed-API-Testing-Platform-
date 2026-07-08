@@ -1,1 +1,1 @@
-"""Redis Streams queue client, worker registry, retry queue. Populated in Step 6."""
+"""Redis Streams queue client and worker liveness registry."""
