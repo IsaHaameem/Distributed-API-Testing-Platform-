@@ -33,10 +33,16 @@ async def register_and_login(client: AsyncClient):
             "/auth/register",
             json={"email": email, "password": password, "full_name": full_name},
         )
+        assert register_response.status_code == 201, (
+            f"Registration failed unexpectedly: {register_response.status_code} {register_response.text}"
+        )
         user_id = register_response.json()["id"]
 
         login_response = await client.post(
             "/auth/login", data={"username": email, "password": password}
+        )
+        assert login_response.status_code == 200, (
+            f"Login failed unexpectedly: {login_response.status_code} {login_response.text}"
         )
         token = login_response.json()["access_token"]
 
@@ -60,6 +66,9 @@ async def create_organization(client: AsyncClient):
         slug = slug or f"org-{uuid.uuid4().hex[:12]}"
         response = await client.post(
             "/organizations", json={"name": name, "slug": slug}, headers=headers
+        )
+        assert response.status_code == 201, (
+            f"Organization creation failed unexpectedly: {response.status_code} {response.text}"
         )
         return response.json()
 

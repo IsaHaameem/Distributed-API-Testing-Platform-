@@ -23,17 +23,18 @@ dependencies = [
     "python-multipart==0.0.32",
     "croniter==6.2.3",
     "tzdata==2026.2",
+    "httpx==0.28.1",
+    "jsonpath-ng==1.7.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "httpx==0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "worker"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -73,6 +73,20 @@ async def test_worker_becomes_not_alive_after_ttl_expires(
     service = _make_service(db_session, redis_client, ttl_seconds=1)
     worker = await service.register(hostname="worker-d", pid=4567, capacity=5)
 
+    # Diagnostic: what TTL did Redis actually record, in milliseconds, right
+    # after registration -- before any waiting. This is the fact that
+    # decides where to look next if this test fails again.
+    key = service.worker_registry.alive_key(worker.id)
+    ttl_ms_at_registration = await redis_client.pttl(key)
+    assert 0 < ttl_ms_at_registration <= 1000, (
+        f"Expected the alive key's TTL to be <=1000ms right after registration with "
+        f"ttl_seconds=1, but Redis reports {ttl_ms_at_registration}ms. If this "
+        f"assertion is what fails: ttl_seconds genuinely isn't reaching Redis, and "
+        f"the bug is in the write path after all. If THIS passes but the test still "
+        f"fails below: the write side is correct, and the real question is what's "
+        f"happening to the key during the 1.5s wait, not how it was created."
+    )
+
     assert await service.worker_registry.is_alive(worker.id) is True
 
     await asyncio.sleep(1.5)
