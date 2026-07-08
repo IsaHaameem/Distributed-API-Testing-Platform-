@@ -55,6 +55,22 @@ services:
       retries: 5
       start_period: 10s
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m worker.main
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/worker:/app/worker
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
 
+    worker_capacity: int = 10
+    worker_heartbeat_interval_seconds: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:
