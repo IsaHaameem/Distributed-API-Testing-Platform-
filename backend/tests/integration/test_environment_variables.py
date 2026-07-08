@@ -232,6 +232,10 @@ async def test_member_cannot_promote_variable_to_secret(
         json={"key": "wasPlain", "value": "x"},
         headers=ctx["owner"]["headers"],
     )
+    assert create_response.status_code == 201, (
+        f"Expected 201 creating the environment variable, got "
+        f"{create_response.status_code}: {create_response.text}"
+    )
     variable_id = create_response.json()["id"]
 
     response = await client.patch(

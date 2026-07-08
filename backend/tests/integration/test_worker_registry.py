@@ -73,18 +73,11 @@ async def test_worker_becomes_not_alive_after_ttl_expires(
     service = _make_service(db_session, redis_client, ttl_seconds=1)
     worker = await service.register(hostname="worker-d", pid=4567, capacity=5)
 
-    # Diagnostic: what TTL did Redis actually record, in milliseconds, right
-    # after registration -- before any waiting. This is the fact that
-    # decides where to look next if this test fails again.
     key = service.worker_registry.alive_key(worker.id)
     ttl_ms_at_registration = await redis_client.pttl(key)
     assert 0 < ttl_ms_at_registration <= 1000, (
         f"Expected the alive key's TTL to be <=1000ms right after registration with "
-        f"ttl_seconds=1, but Redis reports {ttl_ms_at_registration}ms. If this "
-        f"assertion is what fails: ttl_seconds genuinely isn't reaching Redis, and "
-        f"the bug is in the write path after all. If THIS passes but the test still "
-        f"fails below: the write side is correct, and the real question is what's "
-        f"happening to the key during the 1.5s wait, not how it was created."
+        f"ttl_seconds=1, but Redis reports {ttl_ms_at_registration}ms."
     )
 
     assert await service.worker_registry.is_alive(worker.id) is True
@@ -100,11 +93,29 @@ async def test_list_workers_reports_live_and_dead_workers_correctly(
 ) -> None:
     service = _make_service(db_session, redis_client, ttl_seconds=1)
 
-    live_worker = await service.register(hostname="worker-live", pid=5678, capacity=5)
     dying_worker = await service.register(hostname="worker-dying", pid=6789, capacity=5)
 
+    dying_key = service.worker_registry.alive_key(dying_worker.id)
+    ttl_ms_at_registration = await redis_client.pttl(dying_key)
+    assert 0 < ttl_ms_at_registration <= 1000, (
+        f"Expected dying_worker's alive key to have <=1000ms TTL right after "
+        f"registration, got {ttl_ms_at_registration}ms."
+    )
+
     await asyncio.sleep(1.5)
-    await service.heartbeat(worker_id=live_worker.id, active_tasks_count=0)
+
+    # Check expiry directly, immediately -- before any other work (a
+    # heartbeat call, a full list_workers() scan) gets a chance to eat into
+    # the margin between "should be expired" and "we actually looked."
+    dying_worker_ttl_after_sleep = await redis_client.pttl(dying_key)
+    assert dying_worker_ttl_after_sleep in (-2, -1), (
+        f"Expected dying_worker's alive key to be gone (pttl -2) after 1.5s past "
+        f"a 1s TTL, but pttl reports {dying_worker_ttl_after_sleep}ms remaining."
+    )
+
+    # live_worker is registered fresh, after dying_worker has already
+    # expired -- its own TTL doesn't need to survive the same sleep window.
+    live_worker = await service.register(hostname="worker-live", pid=5678, capacity=5)
 
     entries = await service.list_workers()
     by_id = {entry["worker"].id: entry["is_alive"] for entry in entries}
