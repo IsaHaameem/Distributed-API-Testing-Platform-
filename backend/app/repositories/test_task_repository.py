@@ -2,9 +2,10 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.enums import TestTaskStatus
 from app.models.test_task import TestTask
 
 
@@ -24,3 +25,26 @@ class TestTaskRepository:
         self.session.add_all(tasks)
         await self.session.flush()
         return tasks
+
+    async def list_by_run(
+        self,
+        test_run_id: UUID,
+        *,
+        status: TestTaskStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[TestTask], int]:
+        """Return one page of tasks for a run, plus the total count matching
+        the filter -- independent of page size, for pagination metadata."""
+        base_query = select(TestTask).where(TestTask.test_run_id == test_run_id)
+        if status is not None:
+            base_query = base_query.where(TestTask.status == status)
+
+        count_result = await self.session.execute(select(func.count()).select_from(base_query.subquery()))
+        total = count_result.scalar_one()
+
+        page_query = (
+            base_query.order_by(TestTask.data_row_index, TestTask.sequence_order).limit(limit).offset(offset)
+        )
+        result = await self.session.execute(page_query)
+        return list(result.scalars().all()), total

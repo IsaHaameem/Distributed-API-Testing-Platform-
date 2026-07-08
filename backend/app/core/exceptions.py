@@ -113,3 +113,8 @@ class WorkerNotFoundError(AppError):
 class CollectionHasNoRequestsError(AppError):
     status_code = 409
     detail = "This collection has no API requests to run."
+
+
+class TestRunNotFoundError(AppError):
+    status_code = 404
+    detail = "Test run not found."

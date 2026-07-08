@@ -1,17 +1,15 @@
-"""Test run orchestration: resolves a collection's requests and a project's
-environment variables, builds one test_task per (request, data row) pair,
-and enqueues them onto the Redis Streams queue for workers to pick up.
-
-This is the one place in the whole codebase where API-layer code and the
-Step 9/10 queue infrastructure meet -- everything before this milestone
-built the machinery; this is what actually feeds it.
+"""Test run business logic: orchestration (creating and enqueuing runs) plus
+reading run and task state back out. Authorization for every method here is
+inherited from organization membership via the collection a run belongs to
+-- the same chain as every other collection-scoped resource.
 """
 
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.core.exceptions import CollectionHasNoRequestsError, CollectionNotFoundError
-from app.models.enums import TestRunStatus, TestRunType
+from app.core.exceptions import CollectionHasNoRequestsError, CollectionNotFoundError, TestRunNotFoundError
+from app.models.enums import TestRunStatus, TestRunType, TestTaskStatus
+from app.models.request_result import RequestResult
 from app.models.test_run import TestRun
 from app.models.test_task import TestTask
 from app.models.user import User
@@ -21,6 +19,7 @@ from app.repositories.collection_repository import CollectionRepository
 from app.repositories.environment_variable_repository import EnvironmentVariableRepository
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.project_repository import ProjectRepository
+from app.repositories.request_result_repository import RequestResultRepository
 from app.repositories.test_run_repository import TestRunRepository
 from app.repositories.test_task_repository import TestTaskRepository
 from app.services.authorization import organization_id_for_collection, require_membership
@@ -37,6 +36,7 @@ class TestRunService:
         project_repository: ProjectRepository,
         member_repository: OrganizationMemberRepository,
         stream_queue: StreamQueue,
+        request_result_repository: RequestResultRepository,
     ) -> None:
         self.test_run_repository = test_run_repository
         self.test_task_repository = test_task_repository
@@ -46,6 +46,7 @@ class TestRunService:
         self.project_repository = project_repository
         self.member_repository = member_repository
         self.stream_queue = stream_queue
+        self.request_result_repository = request_result_repository
 
     async def create_run(
         self, *, current_user: User, collection_id: UUID, data_rows: list[dict[str, str]] | None
@@ -83,10 +84,6 @@ class TestRunService:
             started_at=datetime.now(timezone.utc),
         )
 
-        # Row-major: every request for row 0, in order, before any request
-        # for row 1 -- so a chain within one data iteration completes before
-        # the next iteration starts, matching how RunContext now scopes
-        # extracted variables per row.
         pending_tasks = [
             TestTask(
                 test_run_id=test_run.id,
@@ -104,4 +101,58 @@ class TestRunService:
         for task in created_tasks:
             await self.stream_queue.enqueue(task.id)
 
+        return test_run
+
+    async def list_runs(
+        self, *, current_user: User, collection_id: UUID, status: TestRunStatus | None
+    ) -> list[TestRun]:
+        organization_id = await organization_id_for_collection(
+            self.collection_repository, self.project_repository, collection_id, CollectionNotFoundError
+        )
+        await require_membership(
+            self.member_repository,
+            organization_id,
+            current_user.id,
+            not_found_error=CollectionNotFoundError,
+        )
+        return await self.test_run_repository.list_by_collection(collection_id, status=status)
+
+    async def get_run(self, *, current_user: User, test_run_id: UUID) -> TestRun:
+        return await self._get_authorized_run(current_user, test_run_id)
+
+    async def list_tasks(
+        self,
+        *,
+        current_user: User,
+        test_run_id: UUID,
+        status: TestTaskStatus | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[TestTask], dict[UUID, RequestResult], int]:
+        await self._get_authorized_run(current_user, test_run_id)
+        tasks, total = await self.test_task_repository.list_by_run(
+            test_run_id, status=status, limit=limit, offset=offset
+        )
+        latest_results = await self.request_result_repository.get_latest_by_task_ids(
+            [task.id for task in tasks]
+        )
+        return tasks, latest_results, total
+
+    async def _get_authorized_run(self, current_user: User, test_run_id: UUID) -> TestRun:
+        test_run = await self.test_run_repository.get_by_id(test_run_id)
+        if test_run is None:
+            raise TestRunNotFoundError()
+
+        organization_id = await organization_id_for_collection(
+            self.collection_repository,
+            self.project_repository,
+            test_run.collection_id,
+            TestRunNotFoundError,
+        )
+        await require_membership(
+            self.member_repository,
+            organization_id,
+            current_user.id,
+            not_found_error=TestRunNotFoundError,
+        )
         return test_run

@@ -18,6 +18,16 @@ class TestRunRepository:
         result = await self.session.execute(select(TestRun).where(TestRun.id == test_run_id))
         return result.scalar_one_or_none()
 
+    async def list_by_collection(
+        self, collection_id: UUID, status: TestRunStatus | None = None
+    ) -> list[TestRun]:
+        query = select(TestRun).where(TestRun.collection_id == collection_id)
+        if status is not None:
+            query = query.where(TestRun.status == status)
+        query = query.order_by(TestRun.created_at.desc())
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
     async def create(
         self,
         *,
