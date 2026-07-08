@@ -80,3 +80,29 @@ async def test_different_runs_have_independent_contexts(redis_client: Redis) -> 
     assert await context.get_all(run_b) == {"var": "for-b"}
 
     await redis_client.delete(context.context_key(run_a), context.context_key(run_b))
+
+
+@pytest.mark.asyncio
+async def test_different_data_rows_have_independent_contexts(redis_client: Redis) -> None:
+    context = RunContext(redis_client)
+    run_id = uuid.uuid4()
+
+    await context.merge(run_id, {"authToken": "row-0-token"}, data_row_index=0)
+    await context.merge(run_id, {"authToken": "row-1-token"}, data_row_index=1)
+
+    assert await context.get_all(run_id, data_row_index=0) == {"authToken": "row-0-token"}
+    assert await context.get_all(run_id, data_row_index=1) == {"authToken": "row-1-token"}
+
+    await redis_client.delete(
+        context.context_key(run_id, data_row_index=0), context.context_key(run_id, data_row_index=1)
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_data_row_index_preserves_original_key_format(redis_client: Redis) -> None:
+    context = RunContext(redis_client)
+    run_id = uuid.uuid4()
+
+    assert context.context_key(run_id) == f"run:{run_id}:context"
+    assert context.context_key(run_id, data_row_index=None) == f"run:{run_id}:context"
+    assert context.context_key(run_id, data_row_index=0) == f"run:{run_id}:row:0:context"

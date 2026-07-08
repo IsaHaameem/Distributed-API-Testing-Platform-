@@ -3,10 +3,10 @@ the underlying request, evaluate assertions, extract chain variables, and
 decide whether it completed, needs a retry, or has failed permanently.
 
 Deliberately does NOT write to Postgres itself -- it returns a TaskOutcome,
-and the caller (the consume loop, Part 4) is responsible for batching
-outcomes from several tasks into one ResultWriter.write_batch() call. The
-one exception is the Redis chain-context merge, which happens immediately,
-here, since a chained task might need it before the batch gets written.
+and the caller (the consume loop) is responsible for batching outcomes from
+several tasks into one ResultWriter.write_batch() call. The one exception is
+the Redis chain-context merge, which happens immediately, here, since a
+chained task might need it before the batch gets written.
 """
 
 from datetime import datetime, timezone
@@ -71,10 +71,10 @@ class TaskProcessor:
             )
 
         environment_variables = (test_run.config or {}).get("environment_variables", {})
-        chain_context = await self.run_context.get_all(test_run.id)
+        chain_context = await self.run_context.get_all(test_run.id, test_task.data_row_index)
         if test_task.data_context:
             # CSV data-driven values are specific to this exact task instance
-            # -- more specific than anything shared across the whole run, so
+            # -- more specific than anything shared across the run/row, so
             # they win over both chain context and environment variables.
             chain_context = {**chain_context, **test_task.data_context}
 
@@ -115,7 +115,7 @@ class TaskProcessor:
 
         if succeeded:
             if extracted_variables:
-                await self.run_context.merge(test_run.id, extracted_variables)
+                await self.run_context.merge(test_run.id, extracted_variables, test_task.data_row_index)
             new_status = TestTaskStatus.COMPLETED
             new_retry_count = test_task.retry_count
             next_retry_at = None

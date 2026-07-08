@@ -108,3 +108,8 @@ class ScheduleNotFoundError(AppError):
 class WorkerNotFoundError(AppError):
     status_code = 404
     detail = "Worker not found."
+
+
+class CollectionHasNoRequestsError(AppError):
+    status_code = 409
+    detail = "This collection has no API requests to run."

@@ -319,3 +319,34 @@ async def test_process_task_data_context_takes_precedence_over_chain_context(
     assert captured["url"] == "https://api.example.com/users/from-csv-row"
 
     await redis_client.delete(run_context.context_key(test_run.id))
+@pytest.mark.asyncio
+async def test_process_task_isolates_extracted_variables_by_data_row(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        user_id = request.url.params.get("userId")
+        return httpx.Response(200, json={"token": f"token-for-{user_id}"})
+
+    test_task, test_run = await _build_task(db_session, url="https://example.com/login")
+    test_task.data_row_index = 0
+    test_task.data_context = {"userId": "row-0"}
+    await db_session.flush()
+
+    api_request = (
+        await db_session.execute(select(ApiRequest).where(ApiRequest.id == test_task.api_request_id))
+    ).scalar_one()
+    api_request.extract_rules = [{"type": "json_path", "path": "$.token", "save_as": "authToken"}]
+    api_request.query_params = {"userId": "{{userId}}"}
+    await db_session.flush()
+
+    processor = _processor(db_session, redis_client, handler)
+    await processor.process_task(test_task.id, worker_id=uuid.uuid4())
+
+    run_context = RunContext(redis_client)
+    row_0_context = await run_context.get_all(test_run.id, data_row_index=0)
+    shared_context = await run_context.get_all(test_run.id)
+
+    assert row_0_context == {"authToken": "token-for-row-0"}
+    assert shared_context == {}  # nothing leaked into the un-scoped, shared key
+
+    await redis_client.delete(run_context.context_key(test_run.id, data_row_index=0))

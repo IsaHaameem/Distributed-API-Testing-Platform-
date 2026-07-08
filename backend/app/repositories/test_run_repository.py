@@ -1,15 +1,12 @@
-"""Test run data-access layer.
+"""Test run data-access layer."""
 
-Minimal by design, same reasoning as TestTaskRepository -- task_processor
-only needs to read a run's config (for resolved environment variables) and
-id (for the chain-context key). Full CRUD belongs to run-orchestration.
-"""
-
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.enums import TestRunStatus, TestRunType
 from app.models.test_run import TestRun
 
 
@@ -20,3 +17,28 @@ class TestRunRepository:
     async def get_by_id(self, test_run_id: UUID) -> TestRun | None:
         result = await self.session.execute(select(TestRun).where(TestRun.id == test_run_id))
         return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        collection_id: UUID,
+        initiated_by: UUID,
+        status: TestRunStatus,
+        run_type: TestRunType,
+        total_tasks: int,
+        config: dict,
+        started_at: datetime,
+    ) -> TestRun:
+        test_run = TestRun(
+            collection_id=collection_id,
+            initiated_by=initiated_by,
+            status=status,
+            run_type=run_type,
+            total_tasks=total_tasks,
+            config=config,
+            started_at=started_at,
+        )
+        self.session.add(test_run)
+        await self.session.flush()
+        await self.session.refresh(test_run)
+        return test_run

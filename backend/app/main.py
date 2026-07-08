@@ -19,6 +19,7 @@ from app.routers import (
     organizations,
     projects,
     requests,
+    runs,
     schedules,
     workers,
 )
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     application.include_router(environment_variables.router)
     application.include_router(schedules.router)
     application.include_router(workers.router)
+    application.include_router(runs.router)
 
     return application
 

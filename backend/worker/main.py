@@ -134,6 +134,13 @@ class WorkerProcess:
             if not entries:
                 continue
 
+            logger.info(
+                "Consumed %d task(s) as %s: %s",
+                len(entries),
+                self.consumer_name,
+                [str(e.task_id) for e in entries],
+            )
+
             self.active_tasks_count = len(entries)
             results = await asyncio.gather(
                 *(self._process_entry(entry) for entry in entries), return_exceptions=True
@@ -158,6 +165,11 @@ class WorkerProcess:
             if outcomes:
                 async with AsyncSessionFactory() as session:
                     await self.result_writer.write_batch(outcomes, session)
+                logger.info(
+                    "Wrote batch of %d outcome(s): %s",
+                    len(outcomes),
+                    [(str(o.test_task_id), o.new_status.value) for o in outcomes],
+                )
 
             # Ack only after the batch is durably written. If the ack itself
             # fails, the entry gets reclaimed and reprocessed later -- a
@@ -165,6 +177,7 @@ class WorkerProcess:
             # silently never being acknowledged.
             if entry_ids_to_ack:
                 await self.stream_queue.ack(*entry_ids_to_ack)
+                logger.info("Acknowledged %d entry/entries.", len(entry_ids_to_ack))
 
     async def _process_entry(self, entry: StreamEntry) -> tuple[str, TaskOutcome | None]:
         async with AsyncSessionFactory() as session:
@@ -179,6 +192,7 @@ class WorkerProcess:
             )
             try:
                 outcome = await processor.process_task(entry.task_id, self.worker_id)
+                logger.info("Task %s processed: %s", entry.task_id, outcome.new_status.value)
                 return entry.entry_id, outcome
             except TaskProcessingError:
                 logger.warning(
