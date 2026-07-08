@@ -1,4 +1,5 @@
-"""Pydantic schemas for reading test tasks and their latest execution result."""
+"""Pydantic schemas for reading test tasks, their latest execution result,
+and full results export."""
 
 from datetime import datetime
 from uuid import UUID
@@ -36,3 +37,21 @@ class TestTaskListRead(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ResultExportRow(BaseModel):
+    """One row per execution attempt, not one per task -- a task retried
+    twice produces two rows here, by design, so retry history is visible in
+    the export rather than collapsed to whatever happened last."""
+
+    test_task_id: UUID
+    api_request_name: str
+    method: str
+    url: str
+    data_row_index: int | None
+    attempt_number: int
+    status_code: int | None
+    latency_ms: int
+    assertions_passed: bool | None
+    error_message: str | None
+    executed_at: datetime

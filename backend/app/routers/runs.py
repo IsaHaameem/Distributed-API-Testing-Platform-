@@ -1,12 +1,16 @@
 """Test run endpoints -- creation (which feeds the Redis Streams queue),
-plus reading run status, listing a collection's runs, and listing a run's
-tasks with their latest execution result. Cancellation and results export
-are explicitly not here -- see the milestone notes on why.
+reading run status, listing a collection's runs, listing a run's tasks with
+their latest execution result, and exporting full results. Cancellation is
+explicitly not here -- see the milestone notes on why.
 """
 
+import csv
+import io
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import JSONResponse, Response
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +29,7 @@ from app.repositories.request_result_repository import RequestResultRepository
 from app.repositories.test_run_repository import TestRunRepository
 from app.repositories.test_task_repository import TestTaskRepository
 from app.schemas.test_run import TestRunCreate, TestRunRead
-from app.schemas.test_task import LatestResultRead, TestTaskListRead, TestTaskRead
+from app.schemas.test_task import LatestResultRead, ResultExportRow, TestTaskListRead, TestTaskRead
 from app.services.test_run_service import TestRunService
 
 router = APIRouter(tags=["runs"])
@@ -84,6 +88,16 @@ def _task_to_read(task, latest_result) -> TestTaskRead:
     )
 
 
+def _rows_to_csv(rows: list[ResultExportRow]) -> str:
+    fieldnames = list(ResultExportRow.model_fields.keys())
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row.model_dump(mode="json"))
+    return buffer.getvalue()
+
+
 @router.post(
     "/collections/{collection_id}/runs",
     response_model=TestRunRead,
@@ -103,8 +117,6 @@ async def create_run(
 @router.get("/collections/{collection_id}/runs", response_model=list[TestRunRead])
 async def list_runs(
     collection_id: UUID,
-    # "status_filter" in Python, "status" on the wire -- the bare name
-    # "status" would shadow the fastapi.status module imported above.
     status_filter: TestRunStatus | None = Query(default=None, alias="status"),
     current_user: User = Depends(get_current_user),
     service: TestRunService = Depends(get_test_run_service),
@@ -144,4 +156,26 @@ async def list_run_tasks(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/runs/{run_id}/results/export")
+async def export_run_results(
+    run_id: UUID,
+    export_format: Literal["csv", "json"] = Query(default="json", alias="format"),
+    current_user: User = Depends(get_current_user),
+    service: TestRunService = Depends(get_test_run_service),
+) -> Response:
+    rows = await service.export_results(current_user=current_user, test_run_id=run_id)
+
+    if export_format == "csv":
+        return Response(
+            content=_rows_to_csv(rows),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="run-{run_id}-results.csv"'},
+        )
+
+    return JSONResponse(
+        content=[row.model_dump(mode="json") for row in rows],
+        headers={"Content-Disposition": f'attachment; filename="run-{run_id}-results.json"'},
     )

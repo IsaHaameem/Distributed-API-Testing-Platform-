@@ -22,6 +22,7 @@ from app.repositories.project_repository import ProjectRepository
 from app.repositories.request_result_repository import RequestResultRepository
 from app.repositories.test_run_repository import TestRunRepository
 from app.repositories.test_task_repository import TestTaskRepository
+from app.schemas.test_task import ResultExportRow
 from app.services.authorization import organization_id_for_collection, require_membership
 
 
@@ -137,6 +138,26 @@ class TestRunService:
             [task.id for task in tasks]
         )
         return tasks, latest_results, total
+
+    async def export_results(self, *, current_user: User, test_run_id: UUID) -> list[ResultExportRow]:
+        await self._get_authorized_run(current_user, test_run_id)
+        rows = await self.request_result_repository.list_by_run(test_run_id)
+        return [
+            ResultExportRow(
+                test_task_id=task.id,
+                api_request_name=api_request.name,
+                method=api_request.method.value,
+                url=api_request.url,
+                data_row_index=task.data_row_index,
+                attempt_number=result.attempt_number,
+                status_code=result.status_code,
+                latency_ms=result.latency_ms,
+                assertions_passed=result.assertions_passed,
+                error_message=result.error_message,
+                executed_at=result.executed_at,
+            )
+            for result, task, api_request in rows
+        ]
 
     async def _get_authorized_run(self, current_user: User, test_run_id: UUID) -> TestRun:
         test_run = await self.test_run_repository.get_by_id(test_run_id)

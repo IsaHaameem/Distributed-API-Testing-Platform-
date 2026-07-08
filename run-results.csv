@@ -1,0 +1,2 @@
+test_task_id,api_request_name,method,url,data_row_index,attempt_number,status_code,latency_ms,assertions_passed,error_message,executed_at
+019f4167-ee13-7af3-8a04-127c2c871142,Get,GET,https://httpbin.org/status/200,,1,503,1364,True,,2026-07-08T11:05:58.259239Z

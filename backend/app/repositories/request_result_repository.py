@@ -5,7 +5,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.api_request import ApiRequest
 from app.models.request_result import RequestResult
+from app.models.test_task import TestTask
 
 
 class RequestResultRepository:
@@ -28,8 +30,19 @@ class RequestResultRepository:
 
         latest_by_task: dict[UUID, RequestResult] = {}
         for row in result.scalars().all():
-            # Ascending attempt_number means each later row for the same task
-            # overwrites the previous one in the dict, leaving the highest
-            # attempt_number -- the most recent attempt -- once the loop ends.
             latest_by_task[row.test_task_id] = row
         return latest_by_task
+
+    async def list_by_run(self, test_run_id: UUID) -> list[tuple[RequestResult, TestTask, ApiRequest]]:
+        """Every attempt of every task in a run, joined with enough task/
+        request context to be self-contained -- the data source for results
+        export. Unlike get_latest_by_task_ids, this deliberately returns
+        every attempt, not just the latest one."""
+        result = await self.session.execute(
+            select(RequestResult, TestTask, ApiRequest)
+            .join(TestTask, TestTask.id == RequestResult.test_task_id)
+            .join(ApiRequest, ApiRequest.id == TestTask.api_request_id)
+            .where(TestTask.test_run_id == test_run_id)
+            .order_by(TestTask.data_row_index, TestTask.sequence_order, RequestResult.attempt_number)
+        )
+        return [(row[0], row[1], row[2]) for row in result.all()]
