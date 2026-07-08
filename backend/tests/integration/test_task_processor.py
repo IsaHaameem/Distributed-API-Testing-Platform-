@@ -2,6 +2,12 @@
 executor, assertion engine, extractor, chain context, and retry scheduling
 into "process one task correctly." Uses httpx.MockTransport for the HTTP
 layer (no real network) and real Redis/Postgres for everything else.
+
+_processor() gives every test its own isolated RetryQueue (unique Redis key)
+by default -- the real backend container's lifespan now runs a live retry
+sweeper (Step 12 Part 1) continuously, and a test writing to the real
+retry:pending key would race it exactly the way test_run_orchestration.py
+raced a real running worker on the real task stream.
 """
 
 import uuid
@@ -113,7 +119,12 @@ async def _build_task(
     return test_task, test_run
 
 
-def _processor(db_session: AsyncSession, redis_client: Redis, handler) -> TaskProcessor:
+def _processor(
+    db_session: AsyncSession,
+    redis_client: Redis,
+    handler,
+    retry_queue: RetryQueue | None = None,
+) -> TaskProcessor:
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return TaskProcessor(
         TestTaskRepository(db_session),
@@ -122,7 +133,7 @@ def _processor(db_session: AsyncSession, redis_client: Redis, handler) -> TaskPr
         AssertionRepository(db_session),
         Executor(http_client),
         RunContext(redis_client),
-        RetryQueue(redis_client),
+        retry_queue or RetryQueue(redis_client, zset_key=f"test:retry:{uuid.uuid4().hex[:12]}"),
     )
 
 
@@ -229,7 +240,9 @@ async def test_process_task_schedules_retry_on_transport_failure(
     test_task, test_run = await _build_task(
         db_session, url="https://example.com/unreachable", retry_count=0, max_retries=3
     )
-    processor = _processor(db_session, redis_client, handler)
+    zset_key = f"test:retry:{uuid.uuid4().hex[:12]}"
+    retry_queue = RetryQueue(redis_client, zset_key=zset_key)
+    processor = _processor(db_session, redis_client, handler, retry_queue=retry_queue)
 
     outcome = await processor.process_task(test_task.id, worker_id=uuid.uuid4())
 
@@ -237,10 +250,10 @@ async def test_process_task_schedules_retry_on_transport_failure(
     assert outcome.retry_count == 1
     assert outcome.next_retry_at is not None
 
-    score = await redis_client.zscore(RETRY_ZSET_KEY, str(test_task.id))
+    score = await redis_client.zscore(zset_key, str(test_task.id))
     assert score is not None
 
-    await redis_client.zrem(RETRY_ZSET_KEY, str(test_task.id))
+    await redis_client.zrem(zset_key, str(test_task.id))
 
 
 @pytest.mark.asyncio
@@ -319,6 +332,8 @@ async def test_process_task_data_context_takes_precedence_over_chain_context(
     assert captured["url"] == "https://api.example.com/users/from-csv-row"
 
     await redis_client.delete(run_context.context_key(test_run.id))
+
+
 @pytest.mark.asyncio
 async def test_process_task_isolates_extracted_variables_by_data_row(
     db_session: AsyncSession, redis_client: Redis
@@ -347,6 +362,6 @@ async def test_process_task_isolates_extracted_variables_by_data_row(
     shared_context = await run_context.get_all(test_run.id)
 
     assert row_0_context == {"authToken": "token-for-row-0"}
-    assert shared_context == {}  # nothing leaked into the un-scoped, shared key
+    assert shared_context == {}
 
     await redis_client.delete(run_context.context_key(test_run.id, data_row_index=0))

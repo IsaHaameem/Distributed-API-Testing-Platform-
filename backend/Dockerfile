@@ -13,6 +13,7 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
 COPY worker ./worker
+COPY scheduler ./scheduler
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -e ".[dev]"

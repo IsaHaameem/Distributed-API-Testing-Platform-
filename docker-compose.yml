@@ -36,6 +36,7 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./backend/worker:/app/worker
+      - ./backend/scheduler:/app/scheduler
       - ./backend/tests:/app/tests
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini

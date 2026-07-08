@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app", "worker"]
+packages = ["app", "worker", "scheduler"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

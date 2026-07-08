@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     worker_capacity: int = 10
     worker_heartbeat_interval_seconds: int = 5
 
+    retry_sweep_interval_seconds: int = 2
+
 
 @lru_cache
 def get_settings() -> Settings:

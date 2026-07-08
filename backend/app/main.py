@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,8 +9,12 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging_config import setup_logging
+from app.core.redis_client import get_redis_client
 from app.database import engine
 from app.middlewares.logging_middleware import LoggingMiddleware
+from app.queue.constants import TASK_STREAM_NAME, WORKER_CONSUMER_GROUP
+from app.queue.retry_queue import RetryQueue
+from app.queue.stream_client import StreamQueue
 from app.routers import (
     assertions,
     auth,
@@ -23,6 +28,7 @@ from app.routers import (
     schedules,
     workers,
 )
+from scheduler.retry_sweeper import RetrySweeper
 
 settings = get_settings()
 
@@ -30,7 +36,22 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
+
+    redis_client = get_redis_client()
+    stream_queue = StreamQueue(redis_client, TASK_STREAM_NAME, WORKER_CONSUMER_GROUP)
+    retry_sweeper = RetrySweeper(
+        RetryQueue(redis_client),
+        stream_queue,
+        interval_seconds=settings.retry_sweep_interval_seconds,
+    )
+    shutdown_event = asyncio.Event()
+    sweep_task = asyncio.create_task(retry_sweeper.run_forever(shutdown_event))
+
     yield
+
+    shutdown_event.set()
+    await sweep_task
+    await redis_client.aclose()
     await engine.dispose()
 
 
