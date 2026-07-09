@@ -33,6 +33,19 @@ class RequestResultRepository:
             latest_by_task[row.test_task_id] = row
         return latest_by_task
 
+    async def list_by_task_id(self, test_task_id: UUID) -> list[RequestResult]:
+        """Every attempt of one task, oldest first -- the full retry history,
+        including the response headers/body snippet fields get_latest_by_task_ids
+        deliberately omits (that method backs a list view; this backs a detail
+        view, where the whole point is showing what get_latest_by_task_ids
+        doesn't)."""
+        result = await self.session.execute(
+            select(RequestResult)
+            .where(RequestResult.test_task_id == test_task_id)
+            .order_by(RequestResult.attempt_number)
+        )
+        return list(result.scalars().all())
+
     async def list_by_run(self, test_run_id: UUID) -> list[tuple[RequestResult, TestTask, ApiRequest]]:
         """Every attempt of every task in a run, joined with enough task/
         request context to be self-contained -- the data source for results

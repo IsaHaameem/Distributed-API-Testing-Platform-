@@ -14,6 +14,7 @@ from app.queue.stream_client import StreamQueue
 from app.repositories.api_request_repository import ApiRequestRepository
 from app.repositories.collection_repository import CollectionRepository
 from app.repositories.environment_variable_repository import EnvironmentVariableRepository
+from app.repositories.execution_log_repository import ExecutionLogRepository
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.request_result_repository import RequestResultRepository
@@ -63,6 +64,7 @@ class CronScheduler:
                 OrganizationMemberRepository(session),
                 self.stream_queue,
                 RequestResultRepository(session),
+                ExecutionLogRepository(session),
             )
 
             triggered_count = 0

@@ -16,20 +16,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_current_user, get_db, get_redis
 from app.models.enums import TestRunStatus, TestTaskStatus
+from app.models.execution_log import ExecutionLog
+from app.models.request_result import RequestResult
 from app.models.test_run import TestRun
+from app.models.test_task import TestTask
 from app.models.user import User
 from app.queue.constants import TASK_STREAM_NAME, WORKER_CONSUMER_GROUP
 from app.queue.stream_client import StreamQueue
 from app.repositories.api_request_repository import ApiRequestRepository
 from app.repositories.collection_repository import CollectionRepository
 from app.repositories.environment_variable_repository import EnvironmentVariableRepository
+from app.repositories.execution_log_repository import ExecutionLogRepository
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.request_result_repository import RequestResultRepository
 from app.repositories.test_run_repository import TestRunRepository
 from app.repositories.test_task_repository import TestTaskRepository
 from app.schemas.test_run import TestRunCreate, TestRunRead
-from app.schemas.test_task import LatestResultRead, ResultExportRow, TestTaskListRead, TestTaskRead
+from app.schemas.test_task import (
+    AttemptRead,
+    ExecutionLogRead,
+    LatestResultRead,
+    ResultExportRow,
+    TestTaskDetailRead,
+    TestTaskListRead,
+    TestTaskRead,
+)
 from app.services.test_run_service import TestRunService
 
 router = APIRouter(tags=["runs"])
@@ -58,6 +70,7 @@ def get_test_run_service(
         OrganizationMemberRepository(db),
         stream_queue,
         RequestResultRepository(db),
+        ExecutionLogRepository(db),
     )
 
 
@@ -83,6 +96,42 @@ def _task_to_read(task, latest_result) -> TestTaskRead:
             if latest_result is not None
             else None
         ),
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
+
+
+def _task_detail_to_read(
+    task: TestTask, attempts: list[RequestResult], logs: list[ExecutionLog]
+) -> TestTaskDetailRead:
+    return TestTaskDetailRead(
+        id=task.id,
+        test_run_id=task.test_run_id,
+        api_request_id=task.api_request_id,
+        sequence_order=task.sequence_order,
+        data_row_index=task.data_row_index,
+        status=task.status,
+        retry_count=task.retry_count,
+        max_retries=task.max_retries,
+        next_retry_at=task.next_retry_at,
+        attempts=[
+            AttemptRead(
+                attempt_number=a.attempt_number,
+                status_code=a.status_code,
+                latency_ms=a.latency_ms,
+                response_headers=a.response_headers,
+                response_body_snippet=a.response_body_snippet,
+                assertions_passed=a.assertions_passed,
+                error_message=a.error_message,
+                executed_by_worker_id=a.executed_by_worker_id,
+                executed_at=a.executed_at,
+            )
+            for a in attempts
+        ],
+        logs=[
+            ExecutionLogRead(level=log.level, message=log.message, created_at=log.created_at)
+            for log in logs
+        ],
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -157,6 +206,19 @@ async def list_run_tasks(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/runs/{run_id}/tasks/{task_id}", response_model=TestTaskDetailRead)
+async def get_task_detail(
+    run_id: UUID,
+    task_id: UUID,
+    current_user: User = Depends(get_current_user),
+    service: TestRunService = Depends(get_test_run_service),
+) -> TestTaskDetailRead:
+    task, attempts, logs = await service.get_task_detail(
+        current_user=current_user, test_run_id=run_id, test_task_id=task_id
+    )
+    return _task_detail_to_read(task, attempts, logs)
 
 
 @router.get("/runs/{run_id}/results/export")

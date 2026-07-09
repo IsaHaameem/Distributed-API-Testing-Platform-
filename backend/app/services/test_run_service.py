@@ -17,8 +17,10 @@ from app.core.exceptions import (
     CollectionHasNoRequestsError,
     CollectionNotFoundError,
     TestRunNotFoundError,
+    TestTaskNotFoundError,
 )
 from app.models.enums import TestRunStatus, TestRunType, TestTaskStatus
+from app.models.execution_log import ExecutionLog
 from app.models.request_result import RequestResult
 from app.models.test_run import TestRun
 from app.models.test_task import TestTask
@@ -27,6 +29,7 @@ from app.queue.stream_client import StreamQueue
 from app.repositories.api_request_repository import ApiRequestRepository
 from app.repositories.collection_repository import CollectionRepository
 from app.repositories.environment_variable_repository import EnvironmentVariableRepository
+from app.repositories.execution_log_repository import ExecutionLogRepository
 from app.repositories.organization_member_repository import OrganizationMemberRepository
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.request_result_repository import RequestResultRepository
@@ -48,6 +51,7 @@ class TestRunService:
         member_repository: OrganizationMemberRepository,
         stream_queue: StreamQueue,
         request_result_repository: RequestResultRepository,
+        execution_log_repository: ExecutionLogRepository,
     ) -> None:
         self.test_run_repository = test_run_repository
         self.test_task_repository = test_task_repository
@@ -58,6 +62,7 @@ class TestRunService:
         self.member_repository = member_repository
         self.stream_queue = stream_queue
         self.request_result_repository = request_result_repository
+        self.execution_log_repository = execution_log_repository
 
     async def create_run(
         self, *, current_user: User, collection_id: UUID, data_rows: list[dict[str, str]] | None
@@ -174,6 +179,25 @@ class TestRunService:
             [task.id for task in tasks]
         )
         return tasks, latest_results, total
+
+    async def get_task_detail(
+        self, *, current_user: User, test_run_id: UUID, test_task_id: UUID
+    ) -> tuple[TestTask, list[RequestResult], list[ExecutionLog]]:
+        """Full detail for one task: every attempt (not just the latest) and
+        every execution log line. Authorization is run-scoped, same as every
+        other run-nested endpoint; a task that exists but belongs to a
+        *different* run 404s the same way a nonexistent one would -- the URL
+        claims a task lives under this run, and if it doesn't, that's not
+        confirmed to the caller either way."""
+        await self._get_authorized_run(current_user, test_run_id)
+
+        test_task = await self.test_task_repository.get_by_id(test_task_id)
+        if test_task is None or test_task.test_run_id != test_run_id:
+            raise TestTaskNotFoundError()
+
+        attempts = await self.request_result_repository.list_by_task_id(test_task_id)
+        logs = await self.execution_log_repository.list_by_task(test_task_id)
+        return test_task, attempts, logs
 
     async def export_results(self, *, current_user: User, test_run_id: UUID) -> list[ResultExportRow]:
         await self._get_authorized_run(current_user, test_run_id)

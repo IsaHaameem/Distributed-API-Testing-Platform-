@@ -118,3 +118,8 @@ class CollectionHasNoRequestsError(AppError):
 class TestRunNotFoundError(AppError):
     status_code = 404
     detail = "Test run not found."
+
+
+class TestTaskNotFoundError(AppError):
+    status_code = 404
+    detail = "Test task not found."

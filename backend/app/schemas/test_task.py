@@ -1,12 +1,13 @@
 """Pydantic schemas for reading test tasks, their latest execution result,
-and full results export."""
+full task detail (every attempt plus execution logs), and full results
+export."""
 
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.models.enums import TestTaskStatus
+from app.models.enums import LogLevel, TestTaskStatus
 
 
 class LatestResultRead(BaseModel):
@@ -37,6 +38,44 @@ class TestTaskListRead(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AttemptRead(BaseModel):
+    """One execution attempt, in full -- unlike LatestResultRead, this
+    includes the response headers/body snippet, since the whole point of a
+    detail view is showing what the list view deliberately omits."""
+
+    attempt_number: int
+    status_code: int | None
+    latency_ms: int
+    response_headers: dict | None
+    response_body_snippet: str | None
+    assertions_passed: bool | None
+    error_message: str | None
+    executed_by_worker_id: UUID | None
+    executed_at: datetime
+
+
+class ExecutionLogRead(BaseModel):
+    level: LogLevel
+    message: str
+    created_at: datetime
+
+
+class TestTaskDetailRead(BaseModel):
+    id: UUID
+    test_run_id: UUID
+    api_request_id: UUID
+    sequence_order: int
+    data_row_index: int | None
+    status: TestTaskStatus
+    retry_count: int
+    max_retries: int
+    next_retry_at: datetime | None
+    attempts: list[AttemptRead]
+    logs: list[ExecutionLogRead]
+    created_at: datetime
+    updated_at: datetime
 
 
 class ResultExportRow(BaseModel):
