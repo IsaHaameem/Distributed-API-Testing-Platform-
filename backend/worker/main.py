@@ -31,6 +31,7 @@ from app.repositories.test_task_repository import TestTaskRepository
 from app.repositories.worker_repository import WorkerRepository
 from app.services.worker_service import WorkerService
 from worker.executor import Executor
+from worker.healthcheck import WORKER_ID_FILE
 from worker.result_writer import ResultWriter, TaskOutcome
 from worker.task_processor import TaskProcessingError, TaskProcessor
 
@@ -88,6 +89,16 @@ class WorkerProcess:
             )
             await session.commit()
             self.worker_id = worker.id
+
+        try:
+            WORKER_ID_FILE.write_text(str(self.worker_id))
+        except OSError:
+            logger.warning(
+                "Could not write worker id to %s; the container healthcheck will report "
+                "unhealthy until this succeeds.",
+                WORKER_ID_FILE,
+                exc_info=True,
+            )
 
         logger.info(
             "Worker %s registered (consumer=%s, capacity=%d)",
