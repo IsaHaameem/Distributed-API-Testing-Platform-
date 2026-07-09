@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     retry_sweep_interval_seconds: int = 2
     cron_check_interval_seconds: int = 30
+    reclaim_sweep_interval_seconds: int = 30
+    reclaim_min_idle_ms: int = 360_000
 
 
 @lru_cache

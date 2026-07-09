@@ -29,6 +29,7 @@ from app.routers import (
     workers,
 )
 from scheduler.cron_scheduler import CronScheduler
+from scheduler.reclaim_sweeper import ReclaimSweeper
 from scheduler.retry_sweeper import RetrySweeper
 
 settings = get_settings()
@@ -50,11 +51,17 @@ async def lifespan(app: FastAPI):
         stream_queue,
         interval_seconds=settings.cron_check_interval_seconds,
     )
+    reclaim_sweeper = ReclaimSweeper(
+        stream_queue,
+        interval_seconds=settings.reclaim_sweep_interval_seconds,
+        min_idle_ms=settings.reclaim_min_idle_ms,
+    )
 
     shutdown_event = asyncio.Event()
     background_tasks = [
         asyncio.create_task(retry_sweeper.run_forever(shutdown_event)),
         asyncio.create_task(cron_scheduler.run_forever(shutdown_event)),
+        asyncio.create_task(reclaim_sweeper.run_forever(shutdown_event)),
     ]
 
     yield
