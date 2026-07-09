@@ -28,6 +28,7 @@ from app.routers import (
     schedules,
     workers,
 )
+from scheduler.cron_scheduler import CronScheduler
 from scheduler.retry_sweeper import RetrySweeper
 
 settings = get_settings()
@@ -39,18 +40,27 @@ async def lifespan(app: FastAPI):
 
     redis_client = get_redis_client()
     stream_queue = StreamQueue(redis_client, TASK_STREAM_NAME, WORKER_CONSUMER_GROUP)
+
     retry_sweeper = RetrySweeper(
         RetryQueue(redis_client),
         stream_queue,
         interval_seconds=settings.retry_sweep_interval_seconds,
     )
+    cron_scheduler = CronScheduler(
+        stream_queue,
+        interval_seconds=settings.cron_check_interval_seconds,
+    )
+
     shutdown_event = asyncio.Event()
-    sweep_task = asyncio.create_task(retry_sweeper.run_forever(shutdown_event))
+    background_tasks = [
+        asyncio.create_task(retry_sweeper.run_forever(shutdown_event)),
+        asyncio.create_task(cron_scheduler.run_forever(shutdown_event)),
+    ]
 
     yield
 
     shutdown_event.set()
-    await sweep_task
+    await asyncio.gather(*background_tasks)
     await redis_client.aclose()
     await engine.dispose()
 

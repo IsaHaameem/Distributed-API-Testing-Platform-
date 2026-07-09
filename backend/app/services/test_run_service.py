@@ -1,13 +1,23 @@
-"""Test run business logic: orchestration (creating and enqueuing runs) plus
-reading run and task state back out. Authorization for every method here is
-inherited from organization membership via the collection a run belongs to
--- the same chain as every other collection-scoped resource.
+"""Test run orchestration: resolves a collection's requests and a project's
+environment variables, builds one test_task per (request, data row) pair,
+and enqueues them onto the Redis Streams queue for workers to pick up.
+
+create_run is the HTTP-facing path, requiring the caller to be an
+organization member. create_scheduled_run is the cron scheduler's path --
+no HTTP request or membership re-check behind it; the schedule's own
+existence and is_active flag (already admin/owner-gated at creation/update
+time, per ScheduleService) are the authorization here, not a per-trigger
+re-validation of the creator's current membership.
 """
 
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.core.exceptions import CollectionHasNoRequestsError, CollectionNotFoundError, TestRunNotFoundError
+from app.core.exceptions import (
+    CollectionHasNoRequestsError,
+    CollectionNotFoundError,
+    TestRunNotFoundError,
+)
 from app.models.enums import TestRunStatus, TestRunType, TestTaskStatus
 from app.models.request_result import RequestResult
 from app.models.test_run import TestRun
@@ -52,6 +62,8 @@ class TestRunService:
     async def create_run(
         self, *, current_user: User, collection_id: UUID, data_rows: list[dict[str, str]] | None
     ) -> TestRun:
+        """HTTP-facing: requires current_user to be a member of the
+        collection's organization."""
         organization_id = await organization_id_for_collection(
             self.collection_repository, self.project_repository, collection_id, CollectionNotFoundError
         )
@@ -61,7 +73,31 @@ class TestRunService:
             current_user.id,
             not_found_error=CollectionNotFoundError,
         )
+        return await self._create_run(
+            collection_id=collection_id,
+            initiated_by=current_user.id,
+            run_type=TestRunType.MANUAL,
+            data_rows=data_rows,
+        )
 
+    async def create_scheduled_run(self, *, collection_id: UUID, initiated_by: UUID) -> TestRun:
+        """Triggered by the cron scheduler -- no HTTP request, no membership
+        re-check. See the module docstring for why."""
+        return await self._create_run(
+            collection_id=collection_id,
+            initiated_by=initiated_by,
+            run_type=TestRunType.SCHEDULED,
+            data_rows=None,
+        )
+
+    async def _create_run(
+        self,
+        *,
+        collection_id: UUID,
+        initiated_by: UUID,
+        run_type: TestRunType,
+        data_rows: list[dict[str, str]] | None,
+    ) -> TestRun:
         api_requests = await self.api_request_repository.list_by_collection(collection_id)
         if not api_requests:
             raise CollectionHasNoRequestsError()
@@ -77,9 +113,9 @@ class TestRunService:
 
         test_run = await self.test_run_repository.create(
             collection_id=collection_id,
-            initiated_by=current_user.id,
+            initiated_by=initiated_by,
             status=TestRunStatus.RUNNING,
-            run_type=TestRunType.MANUAL,
+            run_type=run_type,
             total_tasks=total_tasks,
             config={"environment_variables": environment_variables},
             started_at=datetime.now(timezone.utc),

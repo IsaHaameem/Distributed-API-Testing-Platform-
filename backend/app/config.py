@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_seconds: int = 5
 
     retry_sweep_interval_seconds: int = 2
+    cron_check_interval_seconds: int = 30
 
 
 @lru_cache

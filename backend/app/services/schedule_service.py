@@ -6,11 +6,7 @@ schedule is currently active, so nothing reading this row has to
 cross-reference is_active separately to know whether it will actually fire.
 """
 
-from datetime import datetime
 from uuid import UUID
-from zoneinfo import ZoneInfo
-
-from croniter import croniter
 
 from app.core.exceptions import CollectionNotFoundError, ScheduleNotFoundError
 from app.models.enums import OrganizationRole
@@ -21,12 +17,7 @@ from app.repositories.organization_member_repository import OrganizationMemberRe
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.schedule_repository import ScheduleRepository
 from app.services.authorization import ADMIN_ROLES, organization_id_for_collection, require_membership
-
-
-def _compute_next_run_at(cron_expression: str, timezone_name: str) -> datetime:
-    tz = ZoneInfo(timezone_name)
-    now = datetime.now(tz)
-    return croniter(cron_expression, now).get_next(datetime)
+from app.services.cron import compute_next_run_at
 
 
 class ScheduleService:
@@ -92,7 +83,7 @@ class ScheduleService:
             not_found_error=CollectionNotFoundError,
         )
 
-        next_run_at = _compute_next_run_at(cron_expression, timezone_name) if is_active else None
+        next_run_at = compute_next_run_at(cron_expression, timezone_name) if is_active else None
 
         return await self.schedule_repository.create(
             collection_id=collection_id,
@@ -126,7 +117,7 @@ class ScheduleService:
             timezone_name = fields.get("timezone", schedule.timezone)
             is_active = fields.get("is_active", schedule.is_active)
             fields["next_run_at"] = (
-                _compute_next_run_at(cron_expression, timezone_name) if is_active else None
+                compute_next_run_at(cron_expression, timezone_name) if is_active else None
             )
 
         return await self.schedule_repository.update(schedule, **fields)

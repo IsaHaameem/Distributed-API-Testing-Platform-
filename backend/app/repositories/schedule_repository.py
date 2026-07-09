@@ -1,5 +1,6 @@
 """Schedule data-access layer."""
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -21,6 +22,19 @@ class ScheduleRepository:
             select(Schedule)
             .where(Schedule.collection_id == collection_id)
             .order_by(Schedule.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_due(self, now: datetime, limit: int = 50) -> list[Schedule]:
+        """Every active schedule whose next_run_at has passed, earliest
+        first. Used by CronScheduler to find what needs triggering this sweep."""
+        result = await self.session.execute(
+            select(Schedule)
+            .where(Schedule.is_active.is_(True))
+            .where(Schedule.next_run_at.is_not(None))
+            .where(Schedule.next_run_at <= now)
+            .order_by(Schedule.next_run_at)
+            .limit(limit)
         )
         return list(result.scalars().all())
 
