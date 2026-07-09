@@ -20,6 +20,7 @@ from app.core.logging_config import setup_logging
 from app.core.redis_client import get_redis_client
 from app.database import AsyncSessionFactory, engine
 from app.queue.constants import TASK_STREAM_NAME, WORKER_CONSUMER_GROUP
+from app.queue.rate_limiter import RateLimiter
 from app.queue.retry_queue import RetryQueue
 from app.queue.run_context import RunContext
 from app.queue.stream_client import StreamEntry, StreamQueue
@@ -33,7 +34,7 @@ from app.services.worker_service import WorkerService
 from worker.executor import Executor
 from worker.healthcheck import WORKER_ID_FILE
 from worker.result_writer import ResultWriter, TaskOutcome
-from worker.task_processor import TaskProcessingError, TaskProcessor
+from worker.task_processor import RateLimitedError, TaskProcessingError, TaskProcessor
 
 logger = logging.getLogger("worker.main")
 
@@ -47,6 +48,7 @@ class WorkerProcess:
         stream_name: str = TASK_STREAM_NAME,
         consumer_group: str = WORKER_CONSUMER_GROUP,
         http_client: httpx.AsyncClient | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.worker_id = None
         self.consumer_name = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -62,6 +64,18 @@ class WorkerProcess:
         self.retry_queue = RetryQueue(self.redis_client)
         self.executor = Executor(self.http_client)
         self.result_writer = ResultWriter()
+        # Caller-supplied rate_limiter (tests) always wins; otherwise fall
+        # back to settings -- disabled by default, so a plain WorkerProcess()
+        # behaves exactly as it did before this feature existed.
+        self.rate_limiter = rate_limiter or (
+            RateLimiter(
+                self.redis_client,
+                capacity=settings.rate_limit_capacity,
+                refill_rate=settings.rate_limit_refill_per_second,
+            )
+            if settings.rate_limit_enabled
+            else None
+        )
 
     async def start(self) -> None:
         await self.stream_queue.ensure_group()
@@ -228,6 +242,7 @@ class WorkerProcess:
                 self.executor,
                 self.run_context,
                 self.retry_queue,
+                self.rate_limiter,
             )
             try:
                 outcome = await processor.process_task(entry.task_id, self.worker_id)
@@ -239,6 +254,9 @@ class WorkerProcess:
                     "doesn't retry forever against an unrecoverable state.",
                     entry.task_id,
                 )
+                return entry.entry_id, None
+            except RateLimitedError as exc:
+                logger.info("Task %s deferred: %s", entry.task_id, exc)
                 return entry.entry_id, None
 
 

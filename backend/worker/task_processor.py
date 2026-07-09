@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.models.enums import TestTaskStatus
+from app.queue.rate_limiter import RateLimiter
 from app.queue.retry_queue import RetryQueue, compute_backoff_seconds
 from app.queue.run_context import RunContext
 from app.repositories.api_request_repository import ApiRequestRepository
@@ -22,7 +23,14 @@ from app.repositories.test_task_repository import TestTaskRepository
 from worker.assertion_engine import evaluate_assertions
 from worker.executor import Executor
 from worker.result_writer import TaskOutcome
+from worker.template_resolver import UndefinedVariableError, resolve_template
 from worker.variable_extractor import ExtractionError, extract_variables
+
+# How long to wait before retrying a task deferred by the rate limiter.
+# Deliberately short and fixed, not exponential-backoff-based like a real
+# execution failure -- an empty bucket refills on its own schedule, this
+# isn't signaling that anything is wrong.
+RATE_LIMITED_RETRY_DELAY_SECONDS = 1.0
 
 
 class TaskProcessingError(Exception):
@@ -30,6 +38,16 @@ class TaskProcessingError(Exception):
     test_task or api_request row is missing. Distinct from a normal
     execution failure (bad HTTP response, failed assertion), which produces
     a TaskOutcome rather than raising."""
+
+
+class RateLimitedError(Exception):
+    """Raised when the target host's token bucket has no tokens available.
+    Deliberately does not consume a retry attempt -- being throttled by our
+    own platform isn't a failure of the target API under test, and shouldn't
+    eat into the caller's configured max_retries. The task is rescheduled
+    via the same retry:pending -> RetrySweeper path a real failure uses, just
+    without touching retry_count, and this task's process_task() call never
+    reaches Executor.execute() at all."""
 
 
 class TaskProcessor:
@@ -42,6 +60,7 @@ class TaskProcessor:
         executor: Executor,
         run_context: RunContext,
         retry_queue: RetryQueue,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.test_task_repository = test_task_repository
         self.test_run_repository = test_run_repository
@@ -50,6 +69,7 @@ class TaskProcessor:
         self.executor = executor
         self.run_context = run_context
         self.retry_queue = retry_queue
+        self.rate_limiter = rate_limiter
 
     async def process_task(self, test_task_id: UUID, worker_id: UUID) -> TaskOutcome:
         test_task = await self.test_task_repository.get_by_id(test_task_id)
@@ -77,6 +97,9 @@ class TaskProcessor:
             # -- more specific than anything shared across the run/row, so
             # they win over both chain context and environment variables.
             chain_context = {**chain_context, **test_task.data_context}
+
+        if self.rate_limiter is not None:
+            await self._check_rate_limit(test_task, api_request, chain_context, environment_variables)
 
         result = await self.executor.execute(
             method=api_request.method,
@@ -146,3 +169,39 @@ class TaskProcessor:
             retry_count=new_retry_count,
             next_retry_at=next_retry_at,
         )
+
+    async def _check_rate_limit(
+        self,
+        test_task,
+        api_request,
+        chain_context: dict[str, str],
+        environment_variables: dict[str, str],
+    ) -> None:
+        """Resolves the same URL template Executor.execute() is about to
+        resolve again, purely to determine the real target host -- the raw,
+        unresolved api_request.url can't be used directly since the host
+        itself may be templated (e.g. "{{base_url}}/users"). resolve_template
+        is pure and cheap; calling it twice costs nothing worth avoiding and
+        keeps Executor's interface untouched."""
+        try:
+            resolved_url = resolve_template(api_request.url, chain_context, environment_variables)
+        except UndefinedVariableError:
+            # Let Executor.execute() hit and report the exact same error the
+            # normal way -- nothing to rate-limit against if we can't even
+            # tell what host this request is for.
+            return
+
+        host = RateLimiter.host_for_url(resolved_url)
+        if host is None:
+            return
+
+        allowed = await self.rate_limiter.try_acquire(host)
+        if not allowed:
+            next_attempt_unix = (
+                datetime.now(timezone.utc).timestamp() + RATE_LIMITED_RETRY_DELAY_SECONDS
+            )
+            await self.retry_queue.schedule_retry(test_task.id, next_attempt_unix)
+            raise RateLimitedError(
+                f"Rate limit exceeded for host {host!r}; task {test_task.id} rescheduled in "
+                f"{RATE_LIMITED_RETRY_DELAY_SECONDS}s without consuming a retry attempt."
+            )

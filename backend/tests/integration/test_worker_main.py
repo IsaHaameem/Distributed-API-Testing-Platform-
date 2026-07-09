@@ -31,6 +31,7 @@ from app.models.test_run import TestRun
 from app.models.test_task import TestTask
 from app.models.user import User
 from app.models.worker import Worker
+from app.queue.rate_limiter import RateLimiter
 from scheduler.reclaim_sweeper import ReclaimSweeper
 from worker.main import WorkerProcess
 
@@ -375,5 +376,152 @@ async def test_worker_recovers_a_stuck_task_via_reclaim_sweep_after_a_write_fail
     await asyncio.wait_for(run_task, timeout=10)
 
     assert completed, "task was not recovered and completed after the reclaim sweep"
+
+    await redis_client.delete(stream_name)
+
+
+async def _build_two_tasks_same_host(db_session: AsyncSession, host: str) -> tuple[TestTask, TestTask]:
+    user = User(
+        email=f"ratelimit-test-{uuid.uuid4()}@example.com",
+        hashed_password=hash_password("a-strong-password-123"),
+        full_name="Rate Limit Test User",
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    org = Organization(name="Rate Limit Org", slug=f"ratelimit-{uuid.uuid4().hex[:12]}")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(OrganizationMember(organization_id=org.id, user_id=user.id, role=OrganizationRole.OWNER))
+
+    project = Project(organization_id=org.id, name="Project", created_by=user.id)
+    db_session.add(project)
+    await db_session.flush()
+
+    collection = Collection(project_id=project.id, name="Collection")
+    db_session.add(collection)
+    await db_session.flush()
+
+    api_request = ApiRequest(
+        collection_id=collection.id, name="Request", method=HttpMethod.GET, url=f"https://{host}/ok"
+    )
+    db_session.add(api_request)
+    await db_session.flush()
+
+    test_run = TestRun(
+        collection_id=collection.id,
+        initiated_by=user.id,
+        status=TestRunStatus.RUNNING,
+        run_type=TestRunType.MANUAL,
+        total_tasks=2,
+        config={"environment_variables": {}},
+    )
+    db_session.add(test_run)
+    await db_session.flush()
+
+    task_a = TestTask(test_run_id=test_run.id, api_request_id=api_request.id)
+    task_b = TestTask(test_run_id=test_run.id, api_request_id=api_request.id)
+    db_session.add_all([task_a, task_b])
+    await db_session.flush()
+
+    return task_a, task_b
+
+
+@pytest.mark.asyncio
+async def test_worker_rate_limits_concurrent_tasks_targeting_the_same_host(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    """Two tasks in the same batch, targeting the same host, with a bucket
+    that can satisfy only one of them immediately -- proves the rate limiter
+    is actually wired into the live consume loop, not just correct in
+    isolation: exactly one request reaches the target, the other is
+    deferred without ever calling out and without being lost."""
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json={"status": "ok"})
+
+    host = f"host-{uuid.uuid4().hex[:12]}.example.com"
+    task_a, task_b = await _build_two_tasks_same_host(db_session, host)
+    await db_session.commit()
+
+    stream_name, group_name = _unique_stream_names()
+    rate_limiter = RateLimiter(redis_client, capacity=1, refill_rate=0.001)  # effectively no refill
+    process = WorkerProcess(
+        stream_name=stream_name,
+        consumer_group=group_name,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        rate_limiter=rate_limiter,
+    )
+    await process.stream_queue.ensure_group()
+    await process.stream_queue.enqueue(task_a.id)
+    await process.stream_queue.enqueue(task_b.id)
+
+    run_task = asyncio.create_task(process.start())
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        await db_session.refresh(task_a)
+        await db_session.refresh(task_b)
+        if TestTaskStatus.COMPLETED in (task_a.status, task_b.status):
+            break
+        await asyncio.sleep(0.2)
+
+    process.request_shutdown()
+    await asyncio.wait_for(run_task, timeout=10)
+
+    completed = [t for t in (task_a, task_b) if t.status == TestTaskStatus.COMPLETED]
+    deferred = [t for t in (task_a, task_b) if t.status == TestTaskStatus.PENDING]
+
+    assert len(completed) == 1, "expected exactly one task to complete immediately"
+    assert len(deferred) == 1, "expected exactly one task to remain deferred, its row untouched"
+    assert call_count["n"] == 1, "the target host must have been called exactly once, not twice"
+
+    await redis_client.delete(stream_name)
+    await redis_client.delete(f"ratelimit:{host}")
+
+
+@pytest.mark.asyncio
+async def test_worker_process_ignores_rate_limiting_when_no_rate_limiter_is_configured(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    """Default construction (no rate_limiter argument, matching
+    rate_limit_enabled=False) behaves exactly as it did before this feature
+    existed -- proven directly at the WorkerProcess level, not just inferred
+    from every pre-existing test in this file still passing unmodified."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    test_task, test_run = await _build_task(db_session)
+    await db_session.commit()
+
+    stream_name, group_name = _unique_stream_names()
+    process = WorkerProcess(
+        stream_name=stream_name,
+        consumer_group=group_name,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    assert process.rate_limiter is None  # settings-driven default: disabled
+
+    await process.stream_queue.ensure_group()
+    await process.stream_queue.enqueue(test_task.id)
+
+    run_task = asyncio.create_task(process.start())
+
+    deadline = time.monotonic() + 8.0
+    completed = False
+    while time.monotonic() < deadline:
+        await db_session.refresh(test_task)
+        if test_task.status == TestTaskStatus.COMPLETED:
+            completed = True
+            break
+        await asyncio.sleep(0.2)
+
+    process.request_shutdown()
+    await asyncio.wait_for(run_task, timeout=10)
+
+    assert completed, "task did not complete within 8 seconds with rate limiting disabled"
 
     await redis_client.delete(stream_name)

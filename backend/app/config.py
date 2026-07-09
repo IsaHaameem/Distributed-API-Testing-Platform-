@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     reclaim_sweep_interval_seconds: int = 30
     reclaim_min_idle_ms: int = 360_000
 
+    rate_limit_enabled: bool = False
+    rate_limit_capacity: int = 10
+    rate_limit_refill_per_second: float = 5.0
+
 
 @lru_cache
 def get_settings() -> Settings:

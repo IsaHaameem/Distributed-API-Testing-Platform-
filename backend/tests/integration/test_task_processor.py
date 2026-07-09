@@ -11,6 +11,7 @@ raced a real running worker on the real task stream.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -36,6 +37,7 @@ from app.models.project import Project
 from app.models.test_run import TestRun
 from app.models.test_task import TestTask
 from app.models.user import User
+from app.queue.rate_limiter import RateLimiter
 from app.queue.retry_queue import RETRY_ZSET_KEY, RetryQueue
 from app.queue.run_context import RunContext
 from app.repositories.api_request_repository import ApiRequestRepository
@@ -43,7 +45,7 @@ from app.repositories.assertion_repository import AssertionRepository
 from app.repositories.test_run_repository import TestRunRepository
 from app.repositories.test_task_repository import TestTaskRepository
 from worker.executor import Executor
-from worker.task_processor import TaskProcessingError, TaskProcessor
+from worker.task_processor import RateLimitedError, TaskProcessingError, TaskProcessor
 
 
 async def _build_task(
@@ -124,6 +126,7 @@ def _processor(
     redis_client: Redis,
     handler,
     retry_queue: RetryQueue | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> TaskProcessor:
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return TaskProcessor(
@@ -134,6 +137,7 @@ def _processor(
         Executor(http_client),
         RunContext(redis_client),
         retry_queue or RetryQueue(redis_client, zset_key=f"test:retry:{uuid.uuid4().hex[:12]}"),
+        rate_limiter,
     )
 
 
@@ -365,3 +369,107 @@ async def test_process_task_isolates_extracted_variables_by_data_row(
     assert shared_context == {}
 
     await redis_client.delete(run_context.context_key(test_run.id, data_row_index=0))
+
+
+@pytest.mark.asyncio
+async def test_process_task_defers_when_rate_limited_without_calling_the_target(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200)
+
+    host = f"host-{uuid.uuid4().hex[:12]}.example.com"
+    test_task, test_run = await _build_task(db_session, url=f"https://{host}/get")
+    rate_limiter = RateLimiter(redis_client, capacity=0, refill_rate=0.001)
+    processor = _processor(db_session, redis_client, handler, rate_limiter=rate_limiter)
+
+    with pytest.raises(RateLimitedError):
+        await processor.process_task(test_task.id, worker_id=uuid.uuid4())
+
+    assert call_count["n"] == 0  # never reached the target at all
+
+    await redis_client.delete(f"ratelimit:{host}")
+
+
+@pytest.mark.asyncio
+async def test_process_task_rate_limited_reschedules_without_consuming_a_retry(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    host = f"host-{uuid.uuid4().hex[:12]}.example.com"
+    test_task, test_run = await _build_task(
+        db_session, url=f"https://{host}/get", retry_count=0, max_retries=3
+    )
+    zset_key = f"test:retry:{uuid.uuid4().hex[:12]}"
+    retry_queue = RetryQueue(redis_client, zset_key=zset_key)
+    rate_limiter = RateLimiter(redis_client, capacity=0, refill_rate=0.001)
+    processor = _processor(
+        db_session, redis_client, handler, retry_queue=retry_queue, rate_limiter=rate_limiter
+    )
+
+    with pytest.raises(RateLimitedError):
+        await processor.process_task(test_task.id, worker_id=uuid.uuid4())
+
+    score = await redis_client.zscore(zset_key, str(test_task.id))
+    assert score is not None
+
+    now = datetime.now(timezone.utc).timestamp()
+    # Rescheduled ~1s out (RATE_LIMITED_RETRY_DELAY_SECONDS), a tight window
+    # specifically to distinguish this from the exponential-backoff delay a
+    # real failure at retry_count=0 would use (2s) -- these must not be the
+    # same code path.
+    assert now < score <= now + 2
+
+    # The task's own row is completely untouched -- rate limiting isn't a
+    # failure, so retry_count must not move and nothing should be RETRYING.
+    await db_session.refresh(test_task)
+    assert test_task.retry_count == 0
+    assert test_task.status == TestTaskStatus.PENDING
+
+    await redis_client.zrem(zset_key, str(test_task.id))
+    await redis_client.delete(f"ratelimit:{host}")
+
+
+@pytest.mark.asyncio
+async def test_process_task_executes_normally_when_the_bucket_has_tokens(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    host = f"host-{uuid.uuid4().hex[:12]}.example.com"
+    test_task, test_run = await _build_task(db_session, url=f"https://{host}/get")
+    rate_limiter = RateLimiter(redis_client, capacity=5, refill_rate=1.0)
+    processor = _processor(db_session, redis_client, handler, rate_limiter=rate_limiter)
+
+    outcome = await processor.process_task(test_task.id, worker_id=uuid.uuid4())
+
+    assert outcome.new_status == TestTaskStatus.COMPLETED
+    assert outcome.status_code == 200
+
+    await redis_client.delete(f"ratelimit:{host}")
+
+
+@pytest.mark.asyncio
+async def test_process_task_ignores_rate_limiting_when_no_limiter_configured(
+    db_session: AsyncSession, redis_client: Redis
+) -> None:
+    """Default behavior (rate_limiter=None, matching rate_limit_enabled=False)
+    is completely unaffected by this feature -- proven directly, not just
+    inferred from every other pre-existing test in this file still passing
+    unmodified."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    test_task, test_run = await _build_task(db_session, url="https://example.com/get")
+    processor = _processor(db_session, redis_client, handler)  # no rate_limiter passed
+
+    outcome = await processor.process_task(test_task.id, worker_id=uuid.uuid4())
+
+    assert outcome.new_status == TestTaskStatus.COMPLETED
