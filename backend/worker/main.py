@@ -163,21 +163,49 @@ class WorkerProcess:
                     outcomes.append(outcome)
 
             if outcomes:
-                async with AsyncSessionFactory() as session:
-                    await self.result_writer.write_batch(outcomes, session)
-                logger.info(
-                    "Wrote batch of %d outcome(s): %s",
-                    len(outcomes),
-                    [(str(o.test_task_id), o.new_status.value) for o in outcomes],
-                )
+                try:
+                    async with AsyncSessionFactory() as session:
+                        await self.result_writer.write_batch(outcomes, session)
+                    logger.info(
+                        "Wrote batch of %d outcome(s): %s",
+                        len(outcomes),
+                        [(str(o.test_task_id), o.new_status.value) for o in outcomes],
+                    )
+                except Exception:
+                    # A transient Postgres/Redis error here must not crash the
+                    # worker -- that would take down the whole TaskGroup (the
+                    # heartbeat loop too) over one bad batch. Nothing was
+                    # written (write_batch's own commit never ran), so skip
+                    # acking entirely: every entry in this cycle stays in our
+                    # pending list, exactly like a dead consumer's entries,
+                    # and gets recovered the same way -- by the reclaim sweep,
+                    # once idle long enough -- rather than being lost or
+                    # silently retried against a half-written state.
+                    logger.exception(
+                        "Failed to write batch of %d outcome(s); leaving %d entry/entries "
+                        "unacknowledged rather than crashing. They will be recovered by the "
+                        "dead-consumer reclaim sweep.",
+                        len(outcomes),
+                        len(entry_ids_to_ack),
+                    )
+                    entry_ids_to_ack = []
 
             # Ack only after the batch is durably written. If the ack itself
             # fails, the entry gets reclaimed and reprocessed later -- a
             # harmless extra attempt -- rather than a written result
-            # silently never being acknowledged.
+            # silently never being acknowledged. Same reasoning as above:
+            # catch here too, so a transient Redis error acking a successful
+            # write doesn't crash the process either.
             if entry_ids_to_ack:
-                await self.stream_queue.ack(*entry_ids_to_ack)
-                logger.info("Acknowledged %d entry/entries.", len(entry_ids_to_ack))
+                try:
+                    await self.stream_queue.ack(*entry_ids_to_ack)
+                    logger.info("Acknowledged %d entry/entries.", len(entry_ids_to_ack))
+                except Exception:
+                    logger.exception(
+                        "Failed to acknowledge %d entry/entries after a durable write; they "
+                        "will be reclaimed and safely reprocessed later rather than lost.",
+                        len(entry_ids_to_ack),
+                    )
 
     async def _process_entry(self, entry: StreamEntry) -> tuple[str, TaskOutcome | None]:
         async with AsyncSessionFactory() as session:

@@ -31,6 +31,7 @@ from app.models.test_run import TestRun
 from app.models.test_task import TestTask
 from app.models.user import User
 from app.models.worker import Worker
+from scheduler.reclaim_sweeper import ReclaimSweeper
 from worker.main import WorkerProcess
 
 
@@ -200,5 +201,179 @@ async def test_worker_process_acks_and_records_a_failed_task(
 
     pending_count = await process.stream_queue.pending_count()
     assert pending_count == 0  # acked, not left stuck in the pending list
+
+    await redis_client.delete(stream_name)
+
+
+@pytest.mark.asyncio
+async def test_consume_loop_survives_a_failed_write_batch(
+    db_session: AsyncSession, redis_client: Redis, monkeypatch
+) -> None:
+    """A transient Postgres/Redis error while writing a batch must not crash
+    the worker process -- only the affected entries should stay stuck in the
+    pending list, unacked, for the reclaim sweep to recover later."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    test_task, test_run = await _build_task(db_session)
+    await db_session.commit()
+
+    stream_name, group_name = _unique_stream_names()
+    process = WorkerProcess(
+        stream_name=stream_name,
+        consumer_group=group_name,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    await process.stream_queue.ensure_group()
+    await process.stream_queue.enqueue(test_task.id)
+
+    call_count = {"n": 0}
+
+    async def flaky_write_batch(outcomes, session):
+        call_count["n"] += 1
+        raise ConnectionError("simulated transient Postgres failure")
+
+    monkeypatch.setattr(process.result_writer, "write_batch", flaky_write_batch)
+
+    run_task = asyncio.create_task(process.start())
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and call_count["n"] < 1:
+        await asyncio.sleep(0.1)
+    assert call_count["n"] >= 1, "write_batch was never attempted"
+
+    # give the loop a moment to finish handling the failure before asserting
+    await asyncio.sleep(0.3)
+
+    assert not run_task.done(), "worker process crashed on a transient write failure"
+
+    await db_session.refresh(test_task)
+    assert test_task.status == TestTaskStatus.PENDING  # unchanged -- nothing was written
+
+    assert await process.stream_queue.pending_count() == 1  # stuck, unacked, not lost
+
+    process.request_shutdown()
+    await asyncio.wait_for(run_task, timeout=10)
+
+    await redis_client.delete(stream_name)
+
+
+@pytest.mark.asyncio
+async def test_consume_loop_survives_a_failed_ack(
+    db_session: AsyncSession, redis_client: Redis, monkeypatch
+) -> None:
+    """A transient failure acking an already-written batch must not crash
+    the worker -- the write already landed; only the ack is at risk."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    test_task, test_run = await _build_task(db_session)
+    await db_session.commit()
+
+    stream_name, group_name = _unique_stream_names()
+    process = WorkerProcess(
+        stream_name=stream_name,
+        consumer_group=group_name,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    await process.stream_queue.ensure_group()
+    await process.stream_queue.enqueue(test_task.id)
+
+    async def failing_ack(*entry_ids):
+        raise ConnectionError("simulated transient Redis failure")
+
+    monkeypatch.setattr(process.stream_queue, "ack", failing_ack)
+
+    run_task = asyncio.create_task(process.start())
+
+    deadline = time.monotonic() + 8.0
+    completed = False
+    while time.monotonic() < deadline:
+        await db_session.refresh(test_task)
+        if test_task.status == TestTaskStatus.COMPLETED:
+            completed = True
+            break
+        await asyncio.sleep(0.2)
+
+    assert completed, "task did not complete within 8 seconds"
+    assert not run_task.done(), "worker process crashed on a transient ack failure"
+
+    # the write landed even though ack failed -- entry stays pending, not lost
+    assert await process.stream_queue.pending_count() == 1
+
+    process.request_shutdown()
+    await asyncio.wait_for(run_task, timeout=10)
+
+    await redis_client.delete(stream_name)
+
+
+@pytest.mark.asyncio
+async def test_worker_recovers_a_stuck_task_via_reclaim_sweep_after_a_write_failure(
+    db_session: AsyncSession, redis_client: Redis, monkeypatch
+) -> None:
+    """End-to-end proof of the whole worker-reliability design: a transient
+    write failure doesn't crash the worker (crash resilience), and the
+    reclaim sweep (dead-consumer reclaim) is what actually recovers the
+    stuck task afterward -- the same still-running worker picks the freshly
+    re-enqueued copy back up and finishes it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    test_task, test_run = await _build_task(db_session)
+    await db_session.commit()
+
+    stream_name, group_name = _unique_stream_names()
+    process = WorkerProcess(
+        stream_name=stream_name,
+        consumer_group=group_name,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    await process.stream_queue.ensure_group()
+    await process.stream_queue.enqueue(test_task.id)
+
+    call_count = {"n": 0}
+    original_write_batch = process.result_writer.write_batch
+
+    async def flaky_write_batch(outcomes, session):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ConnectionError("simulated transient Postgres failure")
+        return await original_write_batch(outcomes, session)
+
+    monkeypatch.setattr(process.result_writer, "write_batch", flaky_write_batch)
+
+    run_task = asyncio.create_task(process.start())
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and call_count["n"] < 1:
+        await asyncio.sleep(0.1)
+    assert call_count["n"] >= 1, "write_batch was never attempted"
+    await asyncio.sleep(0.3)
+
+    assert not run_task.done(), "worker process crashed on a transient write failure"
+    assert await process.stream_queue.pending_count() == 1
+
+    # Simulate the reclaim sweep noticing and recovering the stuck entry --
+    # min_idle_ms=0 stands in for "enough time has passed" in this test.
+    reclaim_sweeper = ReclaimSweeper(process.stream_queue, min_idle_ms=0)
+    reclaimed = await reclaim_sweeper.sweep_once()
+    assert reclaimed == 1
+
+    deadline = time.monotonic() + 8.0
+    completed = False
+    while time.monotonic() < deadline:
+        await db_session.refresh(test_task)
+        if test_task.status == TestTaskStatus.COMPLETED:
+            completed = True
+            break
+        await asyncio.sleep(0.2)
+
+    process.request_shutdown()
+    await asyncio.wait_for(run_task, timeout=10)
+
+    assert completed, "task was not recovered and completed after the reclaim sweep"
 
     await redis_client.delete(stream_name)
